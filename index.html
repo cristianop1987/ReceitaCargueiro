@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Processador de Manifestos e Múltiplas Bases</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; line-height: 1.6; background-color: #f8f9fa; }
+        .container { max-width: 900px; margin: auto; border: 1px solid #dee2e6; padding: 30px; border-radius: 12px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .input-group { margin-bottom: 20px; padding: 15px; border: 1px dashed #007bff; border-radius: 8px; }
+        .input-group label { font-weight: bold; display: block; margin-bottom: 10px; color: #0056b3; }
+        button { padding: 12px 25px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 5px; font-size: 16px; transition: 0.3s; margin-right: 10px; }
+        button:hover { background: #218838; }
+        button.btn-export { background: #dc3545; display: none; } /* Escondido inicialmente */
+        button.btn-export:hover { background: #c82333; }
+        #resultado { margin-top: 25px; white-space: pre-wrap; background: #e9ecef; padding: 20px; border-radius: 8px; font-family: monospace; border-left: 5px solid #007bff; }
+        .file-list { font-size: 0.9em; color: #666; margin-top: 5px; }
+        .actions { margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Conciliador de AWB (Multi-Bases)</h2>
+    
+    <div class="input-group">
+        <label>1. Anexe o PDF do Manifesto (ManifestPrint):</label>
+        <input type="file" id="pdfFile" accept="application/pdf">
+    </div>
+
+    <div class="input-group">
+        <label>2. Anexe as Planilhas de Base (Pode selecionar várias):</label>
+        <input type="file" id="excelFiles" accept=".csv, .xlsx" multiple>
+        <div class="file-list" id="listaArquivos">Nenhum arquivo selecionado</div>
+    </div>
+
+    <div class="actions">
+        <button onclick="processarTudo()">Processar Manifestos e Bases</button>
+        <button id="btnExportar" class="btn-export" onclick="exportarParaPDF()">Exportar Relatório PDF</button>
+    </div>
+
+    <div id="resultado">Os resultados consolidados aparecerão aqui...</div>
+</div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+    // Armazenamento global dos resultados para exportação
+    let dadosProcessados = [];
+    let resumoFinal = {};
+
+    document.getElementById('excelFiles').addEventListener('change', function(e) {
+        const nomes = Array.from(e.target.files).map(f => f.name).join(', ');
+        document.getElementById('listaArquivos').innerText = "Arquivos: " + (nomes || "Nenhum");
+    });
+
+    async function processarTudo() {
+        const pdfInput = document.getElementById('pdfFile').files[0];
+        const excelFiles = document.getElementById('excelFiles').files;
+        const output = document.getElementById('resultado');
+        const btnExportar = document.getElementById('btnExportar');
+
+        if (!pdfInput || excelFiles.length === 0) {
+            alert("Por favor, anexe o PDF e pelo menos uma planilha de base.");
+            return;
+        }
+
+        output.innerText = "Lendo arquivos e cruzando dados...";
+        btnExportar.style.display = "none";
+        dadosProcessados = []; // Limpa dados anteriores
+
+        try {
+            const awbsNoPdf = await extrairAwbsPdf(pdfInput);
+            const mapaComissoes = new Map();
+            
+            for (let file of excelFiles) {
+                const dados = await lerPlanilha(file);
+                for (let i = 1; i < dados.length; i++) {
+                    const linha = dados[i];
+                    const awbPlanilha = String(linha[1] || "").trim();
+                    const valorAL = parseFloat(String(linha[37] || 0).replace(',', '.'));
+                    
+                    if (awbPlanilha && !isNaN(valorAL)) {
+                        mapaComissoes.set(awbPlanilha, valorAL);
+                    }
+                }
+            }
+
+            let somaTotal = 0;
+            let encontrados = 0;
+            let detalhesTexto = `Relatório de Processamento:\n----------------------------------------\n`;
+
+            awbsNoPdf.forEach(awb => {
+                const valor = mapaComissoes.get(awb);
+                const encontrado = mapaComissoes.has(awb);
+                
+                if (encontrado) {
+                    somaTotal += valor;
+                    encontrados++;
+                }
+
+                // Salva para o PDF
+                dadosProcessados.push({
+                    awb: awb,
+                    valor: encontrado ? valor.toFixed(2) : "NÃO ENCONTRADO",
+                    status: encontrado ? "OK" : "PENDENTE"
+                });
+
+                detalhesTexto += `AWB: ${awb} | Valor AL: ${encontrado ? valor.toFixed(2) : "[NÃO ENCONTRADO]"}\n`;
+            });
+
+            const formatador = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+            
+            resumoFinal = {
+                totalUnicos: awbsNoPdf.size,
+                totalLocalizados: encontrados,
+                soma: formatador.format(somaTotal)
+            };
+
+            output.innerText = `${detalhesTexto}\n` +
+                               `----------------------------------------\n` +
+                               `RESUMO FINAL:\n` +
+                               `Total de AWBs únicos no PDF: ${resumoFinal.totalUnicos}\n` +
+                               `Total de AWBs localizados: ${resumoFinal.totalLocalizados}\n` +
+                               `SOMA TOTAL (AL): ${resumoFinal.soma}`;
+            
+            btnExportar.style.display = "inline-block";
+
+        } catch (error) {
+            console.error(error);
+            output.innerText = "Erro crítico: " + error.message;
+        }
+    }
+
+    async function extrairAwbsPdf(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+        let awbsUnicos = new Set();
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            const text = content.items.map(item => item.str).join(" ");
+            const matches = text.match(/577-?\d{8}/g);
+            if (matches) {
+                matches.forEach(match => { awbsUnicos.add(match.replace(/-/g, "")); });
+            }
+        }
+        return awbsUnicos;
+    }
+
+    async function lerPlanilha(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer);
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        return XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+    }
+
+    // Função para gerar o PDF
+    function exportarParaPDF() {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+
+        // Título
+        doc.setFontSize(18);
+        doc.text("Relatório de Conciliação de AWB", 14, 20);
+        
+        // Resumo
+        doc.setFontSize(11);
+        doc.text(`Data do Processamento: ${new Date().toLocaleString('pt-BR')}`, 14, 30);
+        doc.text(`Total AWBs únicos: ${resumoFinal.totalUnicos}`, 14, 37);
+        doc.text(`Total Localizados: ${resumoFinal.totalLocalizados}`, 14, 44);
+        doc.text(`Valor Total: ${resumoFinal.soma}`, 14, 51);
+
+        // Tabela de Dados
+        const colunas = ["AWB", "Valor AL (R$)", "Status"];
+        const linhas = dadosProcessados.map(item => [item.awb, item.valor, item.status]);
+
+        doc.autoTable({
+            startY: 60,
+            head: [colunas],
+            body: linhas,
+            theme: 'grid',
+            headStyles: { fillColor: [40, 167, 69] }, // Verde sucesso
+            didParseCell: function(data) {
+                if (data.cell.text[0] === 'NÃO ENCONTRADO') {
+                    data.cell.styles.textColor = [220, 53, 69]; // Vermelho para erros
+                }
+            }
+        });
+
+        doc.save(`conciliacao_${new Date().getTime()}.pdf`);
+    }
+</script>
+
+</body>
+</html>
