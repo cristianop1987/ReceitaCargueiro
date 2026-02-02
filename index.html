@@ -14,10 +14,12 @@
         .container { max-width: 900px; margin: auto; border: 1px solid #dee2e6; padding: 30px; border-radius: 12px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         .input-group { margin-bottom: 20px; padding: 15px; border: 1px dashed #007bff; border-radius: 8px; }
         .input-group label { font-weight: bold; display: block; margin-bottom: 10px; color: #0056b3; }
-        button { padding: 12px 25px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 5px; font-size: 16px; transition: 0.3s; margin-right: 10px; }
+        button { padding: 12px 25px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 5px; font-size: 16px; transition: 0.3s; margin-right: 10px; margin-bottom: 5px; }
         button:hover { background: #218838; }
-        button.btn-export { background: #dc3545; display: none; } /* Escondido inicialmente */
-        button.btn-export:hover { background: #c82333; }
+        .btn-export-pdf { background: #dc3545; display: none; }
+        .btn-export-pdf:hover { background: #c82333; }
+        .btn-export-excel { background: #007bff; display: none; }
+        .btn-export-excel:hover { background: #0069d9; }
         #resultado { margin-top: 25px; white-space: pre-wrap; background: #e9ecef; padding: 20px; border-radius: 8px; font-family: monospace; border-left: 5px solid #007bff; }
         .file-list { font-size: 0.9em; color: #666; margin-top: 5px; }
         .actions { margin-top: 20px; }
@@ -41,7 +43,8 @@
 
     <div class="actions">
         <button onclick="processarTudo()">Processar Manifestos e Bases</button>
-        <button id="btnExportar" class="btn-export" onclick="exportarParaPDF()">Exportar Relatório PDF</button>
+        <button id="btnExportarPDF" class="btn-export-pdf" onclick="exportarParaPDF()">Exportar PDF</button>
+        <button id="btnExportarExcel" class="btn-export-excel" onclick="exportarParaExcel()">Exportar Excel (.xlsx)</button>
     </div>
 
     <div id="resultado">Os resultados consolidados aparecerão aqui...</div>
@@ -50,7 +53,6 @@
 <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
-    // Armazenamento global dos resultados para exportação
     let dadosProcessados = [];
     let resumoFinal = {};
 
@@ -63,7 +65,8 @@
         const pdfInput = document.getElementById('pdfFile').files[0];
         const excelFiles = document.getElementById('excelFiles').files;
         const output = document.getElementById('resultado');
-        const btnExportar = document.getElementById('btnExportar');
+        const btnPDF = document.getElementById('btnExportarPDF');
+        const btnExcel = document.getElementById('btnExportarExcel');
 
         if (!pdfInput || excelFiles.length === 0) {
             alert("Por favor, anexe o PDF e pelo menos uma planilha de base.");
@@ -71,8 +74,9 @@
         }
 
         output.innerText = "Lendo arquivos e cruzando dados...";
-        btnExportar.style.display = "none";
-        dadosProcessados = []; // Limpa dados anteriores
+        btnPDF.style.display = "none";
+        btnExcel.style.display = "none";
+        dadosProcessados = [];
 
         try {
             const awbsNoPdf = await extrairAwbsPdf(pdfInput);
@@ -104,10 +108,11 @@
                     encontrados++;
                 }
 
-                // Salva para o PDF
+                // Salva para exportação
+                // Se não encontrado, o valor fica null (vazio no Excel)
                 dadosProcessados.push({
                     awb: awb,
-                    valor: encontrado ? valor.toFixed(2) : "NÃO ENCONTRADO",
+                    valor: encontrado ? valor : null, 
                     status: encontrado ? "OK" : "PENDENTE"
                 });
 
@@ -129,7 +134,8 @@
                                `Total de AWBs localizados: ${resumoFinal.totalLocalizados}\n` +
                                `SOMA TOTAL (AL): ${resumoFinal.soma}`;
             
-            btnExportar.style.display = "inline-block";
+            btnPDF.style.display = "inline-block";
+            btnExcel.style.display = "inline-block";
 
         } catch (error) {
             console.error(error);
@@ -161,40 +167,51 @@
         return XLSX.utils.sheet_to_json(worksheet, { header: 1 });
     }
 
-    // Função para gerar o PDF
     function exportarParaPDF() {
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF();
-
-        // Título
         doc.setFontSize(18);
         doc.text("Relatório de Conciliação de AWB", 14, 20);
-        
-        // Resumo
         doc.setFontSize(11);
-        doc.text(`Data do Processamento: ${new Date().toLocaleString('pt-BR')}`, 14, 30);
-        doc.text(`Total AWBs únicos: ${resumoFinal.totalUnicos}`, 14, 37);
-        doc.text(`Total Localizados: ${resumoFinal.totalLocalizados}`, 14, 44);
-        doc.text(`Valor Total: ${resumoFinal.soma}`, 14, 51);
+        doc.text(`Data: ${new Date().toLocaleString('pt-BR')}`, 14, 30);
+        doc.text(`Total AWBs: ${resumoFinal.totalUnicos} | Localizados: ${resumoFinal.totalLocalizados}`, 14, 37);
+        doc.text(`Valor Total: ${resumoFinal.soma}`, 14, 44);
 
-        // Tabela de Dados
         const colunas = ["AWB", "Valor AL (R$)", "Status"];
-        const linhas = dadosProcessados.map(item => [item.awb, item.valor, item.status]);
+        const linhas = dadosProcessados.map(item => [
+            item.awb, 
+            item.valor !== null ? item.valor.toFixed(2) : "NÃO ENCONTRADO", 
+            item.status
+        ]);
 
         doc.autoTable({
-            startY: 60,
+            startY: 50,
             head: [colunas],
             body: linhas,
             theme: 'grid',
-            headStyles: { fillColor: [40, 167, 69] }, // Verde sucesso
+            headStyles: { fillColor: [40, 167, 69] },
             didParseCell: function(data) {
                 if (data.cell.text[0] === 'NÃO ENCONTRADO') {
-                    data.cell.styles.textColor = [220, 53, 69]; // Vermelho para erros
+                    data.cell.styles.textColor = [220, 53, 69];
                 }
             }
         });
-
         doc.save(`conciliacao_${new Date().getTime()}.pdf`);
+    }
+
+    function exportarParaExcel() {
+        // Prepara os dados: se o valor for null, a célula fica vazia
+        const worksheetData = [
+            ["AWB", "Valor AL", "Status"], // Cabeçalho
+            ...dadosProcessados.map(item => [item.awb, item.valor, item.status])
+        ];
+
+        const ws = XLSX.utils.aoa_to_sheet(worksheetData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Conciliação");
+
+        // Gera o arquivo e faz o download
+        XLSX.writeFile(wb, `conciliacao_${new Date().getTime()}.xlsx`);
     }
 </script>
 
